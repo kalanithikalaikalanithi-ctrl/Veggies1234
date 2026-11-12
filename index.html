@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>QuickDrop – Delivery App</title>
+<style>
+:root{--bg:#f6f7f9;--c:#fff;--t:#1b1f24;--m:#667;--p:#e8590c;--b:#e2e5ea}
+@media(prefers-color-scheme:dark){:root{--bg:#14161a;--c:#1e2127;--t:#eceff3;--m:#9aa;--b:#333842}}
+*{box-sizing:border-box}body{margin:0;font:15px system-ui,sans-serif;background:var(--bg);color:var(--t)}
+header{display:flex;justify-content:space-between;align-items:center;padding:12px 16px;background:var(--p);color:#fff;font-weight:700}
+nav{display:flex;gap:6px;overflow-x:auto;padding:10px 12px;background:var(--c);border-bottom:1px solid var(--b)}
+nav button{white-space:nowrap;background:none;color:var(--t)}nav button.on{background:var(--p);color:#fff}
+main{max-width:900px;margin:auto;padding:12px}
+.c{background:var(--c);border:1px solid var(--b);border-radius:12px;padding:12px;margin:10px 0}
+.g{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px}
+input,select,textarea,button{font:inherit;padding:8px 10px;border-radius:8px;border:1px solid var(--b);background:var(--c);color:var(--t);margin:3px 0;max-width:100%}
+input,select,textarea{width:100%}button,.btn{background:var(--p);color:#fff;border:0;cursor:pointer;padding:8px 12px;border-radius:8px;display:inline-block}
+button.s,.btn.s{background:var(--b);color:var(--t)}button.d{background:#c92a2a}
+.m{color:var(--m);font-size:13px}.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+img.p{width:100%;height:100px;object-fit:cover;border-radius:8px;background:var(--b)}
+.dot{font-size:11px;padding:3px 7px;border-radius:99px;background:var(--b);margin-right:3px}.dot.on{background:#2b8a3e;color:#fff}
+.tag{font-size:12px;background:var(--b);padding:2px 8px;border-radius:99px}
+#toast{position:fixed;bottom:14px;left:50%;transform:translateX(-50%);display:flex;flex-direction:column;gap:6px;z-index:9}
+#toast div{background:#222;color:#fff;padding:10px 14px;border-radius:10px}
+.ov{position:fixed;inset:0;background:#000a;display:flex;align-items:center;justify-content:center;z-index:10;padding:20px}
+.ov .c{max-width:380px}.bar{background:var(--p);height:14px;border-radius:4px}
+</style></head>
+<body><div id="app"></div><div id="rc"></div><div id="toast"></div>
+<script src="https://cdn.jsdelivr.net/npm/firebase@10.12.2/firebase-app-compat.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/firebase@10.12.2/firebase-auth-compat.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/firebase@10.12.2/firebase-firestore-compat.js"></script>
+<script>
+/* SETUP: 1) Create Firebase project  2) Auth: enable Email/Password + Phone  3) Create Firestore
+   4) Paste web config below  5) Paste the Firestore rules (see bottom comment) */
+const firebaseConfig={apiKey:"YOUR_API_KEY",authDomain:"YOUR_PROJECT.firebaseapp.com",projectId:"YOUR_PROJECT",appId:"YOUR_APP_ID"};
+firebase.initializeApp(firebaseConfig);
+const auth=firebase.auth(),db=firebase.firestore(),FV=firebase.firestore.FieldValue;
+const $=s=>document.querySelector(s),E=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const mail=p=>p+'@dlv.app',DA='6382462741',DP='621012',ST=['Placed','Packed','Out for Delivery','Delivered'];
+const S={me:null,tab:'shop',cart:{},products:[],orders:[],users:[],cfg:{},am:'login',q:{}};
+let ul=[],om={},watch=null,lastT=0,role0=null;
+const A={};
+const toast=m=>{const d=document.createElement('div');d.textContent=m;$('#toast').append(d);setTimeout(()=>d.remove(),5000)};
+const V=id=>($('#'+id)||{}).value||'';
+const isA=()=>S.me&&S.me.role.includes('admin'),isDA=()=>S.me&&S.me.role==='default_admin';
+const pic=(f,m=500)=>new Promise(r=>{if(!f)return r('');const i=new Image;i.onload=()=>{const k=Math.min(1,m/Math.max(i.width,i.height)),c=document.createElement('canvas');c.width=i.width*k;c.height=i.height*k;c.getContext('2d').drawImage(i,0,0,c.width,c.height);r(c.toDataURL('image/jpeg',.6))};i.src=URL.createObjectURL(f)});
+const dist=(a,b,c,d)=>{const t=x=>x*Math.PI/180,h=Math.sin(t(c-a)/2)**2+Math.cos(t(a))*Math.cos(t(c))*Math.sin(t(d-b)/2)**2;return 12742000*Math.asin(Math.sqrt(h))};
+const pos=()=>new Promise((ok,no)=>navigator.geolocation.getCurrentPosition(p=>ok(p.coords),no,{enableHighAccuracy:true}));
+const map=l=>l?`<a href="https://maps.google.com/?q=${l.lat},${l.lng}" target="_blank">📍 view on map</a>`:'';
+const money=n=>'₹'+(+n).toFixed(0);
+const tabs=()=>{const r=S.me.role;return r==='customer'?[['shop','Shop'],['cart','Cart ('+Object.keys(S.cart).length+')'],['orders','Orders'],['profile','Profile']]:r==='partner'?[['avail','Available'],['mine','My deliveries']]:[['orders','Orders'],['products','Products'],['users','Users'],['partners','Partners']].concat(isDA()?[['revenue','Revenue'],['settings','Settings']]:[])};
+
+/* ---------- AUTH ---------- */
+let rv;const otp=async p=>{rv=rv||new firebase.auth.RecaptchaVerifier('rc',{size:'invisible'});S.conf=await auth.signInWithPhoneNumber('+91'+p,rv)};
+const go=f=>async(...a)=>{try{await f(...a)}catch(e){toast(e.message||e)}};
+A.m=m=>{S.am=m;R()};
+A.login=go(async()=>{const p=V('ph').trim(),w=V('pw');
+ try{await auth.signInWithEmailAndPassword(mail(p),w)}
+ catch(e){if(p===DA&&w===DP&&/user-not-found|invalid-credential/.test(e.code)){ // seed Default Admin on first login
+  const r=await auth.createUserWithEmailAndPassword(mail(p),w);await db.doc('users/'+r.user.uid).set({name:'Default Admin',phone:p,role:'default_admin',created:Date.now()})}else throw e}});
+A.rr=()=>{$('#pex').style.display=V('role')==='partner'?'block':'none'};
+A.regNext=go(async()=>{const r={name:V('nm').trim(),phone:V('ph').trim(),pw:V('pw'),role:V('role')};
+ if(!r.name||!/^\d{10}$/.test(r.phone)||r.pw.length<6)throw'Enter name, 10-digit phone and 6+ char password';
+ if(r.role==='partner'){const g=id=>V(id).trim();Object.assign(r,{father:g('fa'),dob:g('dob'),aadhaar:g('aa'),email:g('em'),vno:g('vn'),dl:g('dl'),
+  vph:await pic($('#vp').files[0]),dlph:await pic($('#dp').files[0])});
+  if(!r.father||!r.dob||!/^\d{12}$/.test(r.aadhaar)||!r.vno||!r.dl||!r.vph||!r.dlph)throw'All partner fields except email are required (Aadhaar = 12 digits)'}
+ S.reg=r;await otp(r.phone);toast('OTP sent');A.m('otp')});
+A.regDone=go(async()=>{const r=S.reg,u=(await S.conf.confirm(V('code'))).user;
+ await u.linkWithCredential(firebase.auth.EmailAuthProvider.credential(mail(r.phone),r.pw));
+ const d={name:r.name,phone:r.phone,role:r.role,temps:[],created:Date.now()};
+ if(r.role==='partner')d.partner={father:r.father,dob:r.dob,aadhaar:r.aadhaar,email:r.email,vno:r.vno,dl:r.dl,vph:r.vph,dlph:r.dlph};
+ await db.doc('users/'+u.uid).set(d)});
+A.fSend=go(async()=>{S.fp=V('ph').trim();await otp(S.fp);toast('OTP sent');A.m('fotp')});
+A.fDone=go(async()=>{const w=V('pw');if(w.length<6)throw'Password needs 6+ characters';
+ const u=(await S.conf.confirm(V('code'))).user;await u.updatePassword(w);toast('Password updated')});
+A.out=()=>{if(watch)navigator.geolocation.clearWatch(watch);watch=null;auth.signOut()};
+
+function authV(){const m=S.am,f=(id,l,t='text')=>`<label class=m>${l}</label><input id=${id} type=${t}>`,
+ fi=(id,l)=>`<label class=m>${l}</label><input id=${id} type=file accept="image/*">`;
+ const b={login:`${f('ph','Mobile number','tel')}${f('pw','Password','password')}<button onclick="A.login()">Login</button>
+  <p><a href=# onclick="A.m('reg');return false">Create account</a> · <a href=# onclick="A.m('forgot');return false">Forgot password?</a></p>`,
+ reg:`${f('nm','Full name')}${f('ph','Mobile number','tel')}${f('pw','Password (6+)','password')}
+  <select id=role onchange="A.rr()"><option value=customer>I'm a Customer</option><option value=partner>I'm a Delivery Partner</option></select>
+  <div id=pex style="display:none">${f('fa("Father")','')}</div>`,
+ otp:`<p class=m>Enter the OTP sent to ${E(S.reg&&S.reg.phone)}</p>${f('code','OTP','tel')}<button onclick="A.regDone()">Verify & create</button>`,
+ forgot:`${f('ph','Registered mobile number','tel')}<button onclick="A.fSend()">Send OTP</button><p><a href=# onclick="A.m('login');return false">Back</a></p>`,
+ fotp:`${f('code','OTP','tel')}${f('pw','New password','password')}<button onclick="A.fDone()">Reset password</button>`}[m];
+ return `<header>🛵 QuickDrop</header><main><div class=c style="max-width:420px;margin:30px auto"><h3>${{login:'Login',reg:'Sign up',otp:'Verify phone',forgot:'Recover password',fotp:'Reset password'}[m]}</h3>${m==='reg'?'':''}${b}
+ ${m==='reg'?'<p><button class=s onclick="A.m(\'login\')">Back</button></p>':''}</div></main>`}
+const regForm=()=>{ // injects full registration form (kept separate for readability)
+ const f=(id,l,t='text')=>`<label class=m>${l}</label><input id=${id} type=${t}>`,fi=(id,l)=>`<label class=m>${l}</label><input id=${id} type=file accept="image/*">`;
+ return `${f('nm','Full name')}${f('ph','Mobile number','tel')}${f('pw','Password (6+)','password')}
+ <select id=role onchange="A.rr()"><option value=customer>I'm a Customer</option><option value=partner>I'm a Delivery Partner</option></select>
+ <div id=pex style="display:none">${f('fa',"Father's name")}${f('dob','Date of birth','date')}${f('aa','Aadhaar number (12 digits)')}${f('em','Email (optional)','email')}
+ ${f('vn','Vehicle number')}${fi('vp','Vehicle photo')}${f('dl','Driving license number')}${fi('dp','Driving license photo')}</div>
+ <button onclick="A.regNext()">Send OTP</button><button class=s onclick="A.m('login')">Back</button>`};
+const _authV=authV;authV=()=>S.am==='reg'?`<header>🛵 QuickDrop</header><main><div class=c style="max-width:420px;margin:30px auto"><h3>Sign up</h3>${regForm()}</div></main>`:_authV();
+
+/* ---------- DATA LISTENERS ---------- */
+auth.onAuthStateChanged(u=>{ul.forEach(f=>f());ul=[];S.me=null;role0=null;if(!u)return R();
+ ul.push(db.doc('users/'+u.uid).onSnapshot(s=>{if(!s.exists)return R();S.me={id:s.id,...s.data()};
+  if(role0!==S.me.role){role0=S.me.role;S.tab=tabs()[0][0];listen()}R()}))});
+function listen(){const u=S.me,adm=isA(),sn=k=>s=>{om[k]=s.docs.map(d=>({id:d.id,...d.data()}));
+  if(u.role==='customer')s.docChanges().forEach(c=>c.type==='modified'&&toast(`Order #${c.doc.id.slice(0,6)}: ${c.doc.data().status}`+(c.doc.data().cancelReason?' – '+c.doc.data().cancelReason:'')));
+  const m=new Map();Object.values(om).flat().forEach(o=>m.set(o.id,o));S.orders=[...m.values()].sort((a,b)=>b.createdAt-a.createdAt);R()};
+ om={};
+ ul.push(db.doc('settings/main').onSnapshot(s=>{S.cfg=s.data()||{};const b=S.cfg.broadcast;let seen='';try{seen=localStorage.seen}catch(e){}
+  if(b&&b.id!==seen&&!$('#bc')){const d=document.createElement('div');d.id='bc';d.className='ov';d.innerHTML=`<div class=c><h3>📢 Announcement</h3><p>${E(b.text)}</p><button onclick="try{localStorage.seen='${b.id}'}catch(e){};this.closest('.ov').remove()">OK, got it</button></div>`;document.body.append(d)}R()}));
+ ul.push(db.collection('products').onSnapshot(s=>{S.products=s.docs.map(d=>({id:d.id,...d.data()}));R()}));
+ const oc=db.collection('orders');
+ if(adm){ul.push(oc.onSnapshot(sn('a')));ul.push(db.collection('users').onSnapshot(s=>{S.users=s.docs.map(d=>({id:d.id,...d.data()}));R()}))}
+ else if(u.role==='customer')ul.push(oc.where('customerId','==',u.id).onSnapshot(sn('c')));
+ else{ul.push(oc.where('partnerId','==',u.id).onSnapshot(sn('m')));ul.push(oc.where('status','==','Packed').onSnapshot(sn('p')));
+  watch=navigator.geolocation.watchPosition(p=>{if(Date.now()-lastT<10000)return;lastT=Date.now();const loc={lat:p.coords.latitude,lng:p.coords.longitude,t:Date.now()};
+   db.doc('users/'+u.id).update({loc});S.orders.filter(o=>o.partnerId===u.id&&o.status===ST[2]).forEach(o=>db.doc('orders/'+o.id).update({pLoc:loc}))},()=>{},{enableHighAccuracy:true})}}
+
+/* ---------- RENDER ---------- */
+let dirty=0;document.addEventListener('focusout',()=>{if(dirty)setTimeout(()=>{dirty=0;R()},300)});
+function R(){const a=$('#app'),ae=document.activeElement;
+ if(ae&&a.contains(ae)&&/INPUT|SELECT|TEXTAREA/.test(ae.tagName)&&S.me){dirty=1;return}
+ if(!S.me){a.innerHTML=authV();return}
+ const hd=`<header><span>🛵 QuickDrop · ${E(S.me.name)} <span class=tag style="color:#222">${S.me.role.replace('_',' ')}</span></span><button class=s onclick="A.out()">Logout</button></header>`;
+ if(S.cfg.maintenance&&!isA()){a.innerHTML=hd+`<main><div class=c><h2>🛠 Under maintenance</h2><p>${E(S.cfg.mmsg||'We will be back shortly.')}</p></div></main>`;return}
+ a.innerHTML=hd+'<nav>'+tabs().map(t=>`<button class="${S.tab===t[0]?'on':'s'}" onclick="S.tab='${t[0]}';R()">${t[1]}</button>`).join('')+'</nav><main>'+(V_[S.tab]?V_[S.tab]():'')+'</main>';
+ if(S.tab==='shop')list()}
+const prog=o=>o.status==='Cancelled'?`<span class="tag" style="background:#c92a2a;color:#fff">Cancelled: ${E(o.cancelReason)}</span>`:ST.map((s,i)=>`<span class="dot ${i<=ST.indexOf(o.status)?'on':''}">${s}</span>`).join('');
+const items=o=>o.items.map(i=>`${E(i.name)} (${E(i.weight)}) ×${i.qty}`).join(', ');
+const avg=p=>p.ratingCount?'★'+(p.ratingSum/p.ratingCount).toFixed(1):'No ratings';
+const addrs=()=>[S.me.perm,...(S.me.temps||[])].filter(Boolean);
+const aopt=()=>addrs().map((a,i)=>`<option value=${i}>${E(a.label)} – ${E(a.text)}</option>`).join('');
+
+/* ---------- CUSTOMER ---------- */
+function list(){const q=S.q,t=(q.t||'').toLowerCase();let l=S.products.filter(p=>(!t||p.name.toLowerCase().includes(t))&&(!q.c||p.category===q.c)&&(!q.m||p.price<=+q.m)&&(!q.s||p.stock>0));
+ if(q.o==='p')l.sort((a,b)=>a.price-b.price);if(q.o==='r')l.sort((a,b)=>(b.ratingSum/(b.ratingCount||1))-(a.ratingSum/(a.ratingCount||1)));
+ $('#list').innerHTML=l.map(p=>`<div class=c><img class=p src="${p.img||''}" alt=""><b>${E(p.name)}</b><div class=m>${E(p.weight)} · ${E(p.category)} · ${avg(p)}</div>
+ <div class=row><b>${money(p.price)}</b>${p.stock>0?`<button onclick="A.add('${p.id}')">Add</button>`:'<span class=m>Out of stock</span>'}</div></div>`).join('')||'<p class=m>No products found.</p>'}
+A.f=(k,v)=>{S.q[k]=v;list()};
+const V_={
+shop:()=>{const cats=[...new Set(S.products.map(p=>p.category))];return `<div class=c><input placeholder="Search products" value="${E(S.q.t)}" oninput="A.f('t',this.value)">
+ <div class=row><select onchange="A.f('c',this.value)"><option value="">All categories</option>${cats.map(c=>`<option ${S.q.c===c?'selected':''}>${E(c)}</option>`).join('')}</select>
+ <input type=number placeholder="Max ₹" style="width:100px" oninput="A.f('m',this.value)"><select onchange="A.f('o',this.value)"><option value="">Sort</option><option value=p>Price ↑</option><option value=r>Rating</option></select>
+ <label><input type=checkbox style="width:auto" onchange="A.f('s',this.checked)"> In stock</label></div></div><div id=list class=g></div>`},
+cart:()=>{const l=Object.entries(S.cart).map(([id,n])=>({p:S.products.find(p=>p.id===id),n})).filter(x=>x.p),tot=l.reduce((s,x)=>s+x.p.price*x.n,0);
+ return l.length?l.map(x=>`<div class="c row"><b style="flex:1">${E(x.p.name)}</b><button class=s onclick="A.dec('${x.p.id}')">−</button>${x.n}<button class=s onclick="A.add('${x.p.id}')">+</button><b>${money(x.p.price*x.n)}</b></div>`).join('')+
+ `<div class=c><b>Total ${money(tot)}</b>${addrs().length?`<select id=ad>${aopt()}</select><button onclick="A.place()">Place order</button>`:'<p class=m>Add an address in Profile first.</p>'}</div>`:'<p class=m>Cart is empty.</p>'},
+orders:()=>S.orders.map(o=>ord(o)).join('')||'<p class=m>No orders yet.</p>',
+profile:()=>{const u=S.me,ad=(p,a={})=>`<input id=${p}l placeholder="Label (Home, Office…)" value="${E(a.label)}"><textarea id=${p}t placeholder="Full address">${E(a.text)}</textarea>
+ <input type=hidden id=${p}la value="${a.lat??''}"><input type=hidden id=${p}ln value="${a.lng??''}"><button class=s onclick="A.geo('${p}')">📍 Pin current location</button>`;
+ return `<div class=c><h3>Profile</h3><input id=nm value="${E(u.name)}"><p class=m>Phone: ${E(u.phone)}</p><h4>Permanent address</h4>${ad('p',u.perm)}<button onclick="A.saveP()">Save</button></div>
+ <div class=c><h4>Temporary addresses (${(u.temps||[]).length}/5)</h4>${(u.temps||[]).map((a,i)=>`<div class=row><span style="flex:1">${E(a.label)}: ${E(a.text)}</span><button class=d onclick="A.delT(${i})">✕</button></div>`).join('')}
+ ${(u.temps||[]).length<5?ad('t')+'<button onclick="A.addT()">Add temporary address</button>':''}</div>`}};
+A.add=id=>{const p=S.products.find(x=>x.id===id);if((S.cart[id]||0)>=p.stock)return toast('Max stock reached');S.cart[id]=(S.cart[id]||0)+1;toast('Added');if(S.tab!=='shop')R()};
+A.dec=id=>{if(--S.cart[id]<=0)delete S.cart[id];R()};
+A.geo=go(async p=>{const c=await pos();$('#'+p+'la').value=c.latitude;$('#'+p+'ln').value=c.longitude;toast('Location pinned')});
+const rd=p=>({label:V(p+'l').trim()||'Address',text:V(p+'t').trim(),lat:+V(p+'la')||null,lng:+V(p+'ln')||null});
+A.saveP=go(async()=>{const a=rd('p');if(!a.text)throw'Enter an address';await db.doc('users/'+S.me.id).update({name:V('nm').trim()||S.me.name,perm:a});toast('Saved')});
+A.addT=go(async()=>{const a=rd('t');if(!a.text)throw'Enter an address';await db.doc('users/'+S.me.id).update({temps:[...(S.me.temps||[]),a].slice(0,5)})});
+A.delT=go(async i=>{const t=[...S.me.temps];t.splice(i,1);await db.doc('users/'+S.me.id).update({temps:t})});
+A.place=go(async()=>{const a=addrs()[+V('ad')],l=Object.entries(S.cart).map(([id,n])=>({...S.products.find(p=>p.id===id),qty:n})),b=db.batch(),r=db.collection('orders').doc();
+ b.set(r,{customerId:S.me.id,cName:S.me.name,items:l.map(p=>({id:p.id,name:p.name,price:p.price,weight:p.weight,qty:p.qty})),total:l.reduce((s,p)=>s+p.price*p.qty,0),addr:a,status:'Placed',createdAt:Date.now(),hist:{Placed:Date.now()}});
+ b.set(r.collection('priv').doc('c'),{phone:S.me.phone});l.forEach(p=>b.update(db.doc('products/'+p.id),{stock:FV.increment(-p.qty)}));
+ await b.commit();S.cart={};S.tab='orders';toast('Order placed!');R()});
+A.rate=go(async(oid,pid,v)=>{if(!v)return;const b=db.batch();b.update(db.doc('orders/'+oid),{['rated.'+pid]:+v});b.update(db.doc('products/'+pid),{ratingSum:FV.increment(+v),ratingCount:FV.increment(1)});await b.commit()});
+A.cancel=go(async(id,r)=>{const o=S.orders.find(x=>x.id===id);if(!r)throw'Select a reason';const b=db.batch();
+ b.update(db.doc('orders/'+id),{status:'Cancelled',cancelReason:r,['hist.Cancelled']:Date.now()});o.items.forEach(i=>b.update(db.doc('products/'+i.id),{stock:FV.increment(i.qty)}));
+ b.set(db.collection('sms_queue').doc(),{uid:o.customerId,orderId:id,text:`Order #${id.slice(0,6)} cancelled: ${r}`,t:Date.now()});await b.commit()});
+const setSt=go(async(o,st,x={})=>{const b=db.batch();b.update(db.doc('orders/'+o.id),{status:st,['hist.'+st]:Date.now(),...x});
+ if(st!=='Packed')b.set(db.collection('sms_queue').doc(),{uid:o.customerId,orderId:o.id,text:`Order #${o.id.slice(0,6)} is now ${st}`,t:Date.now()});await b.commit()});
+A.st=(id,s)=>setSt(S.orders.find(o=>o.id===id),s);
+
+function ord(o){const r=S.me.role,idx=ST.indexOf(o.status),live=o.status!=='Cancelled'&&o.status!=='Delivered';let x='';
+ if(r==='customer'){
+  if(o.partnerId)x+=`<div class=m>🛵 ${E(o.pName)} · <a href="tel:${E(o.pPhone)}">${E(o.pPhone)}</a> ${o.status===ST[2]?map(o.pLoc):''}</div>`;
+  if(live&&idx<=1)x+=`<button class=d onclick="A.cancel('${o.id}','Cancelled by customer')">Cancel order</button>`;
+  if(o.status==='Delivered')x+=o.items.map(i=>o.rated&&o.rated[i.id]?`<div class=m>${E(i.name)}: you rated ★${o.rated[i.id]}</div>`:`<div class=row><span>${E(i.name)}</span><select onchange="A.rate('${o.id}','${i.id}',this.value)"><option value="">Rate…</option>${[5,4,3,2,1].map(n=>`<option>${n}</option>`).join('')}</select></div>`).join('')}
+ if(r==='partner'){
+  if(o.status==='Packed'&&!o.partnerId)x+=`<button onclick="A.accept('${o.id}')">Accept delivery</button>`;
+  if(o.partnerId===S.me.id&&o.status==='Packed')x+=`<button onclick="A.st('${o.id}','${ST[2]}')">Picked up – start delivery</button>`;
+  if(o.partnerId===S.me.id&&live){x+=`<button class=s onclick="A.reveal('${o.id}')">Show customer phone (within 50 m)</button> <span id=ph${o.id} class=m></span>`;
+   if(o.status===ST[2])x+=`<label class="btn">📷 Handover photo & deliver<input type=file accept="image/*" capture=environment hidden onchange="A.deliver('${o.id}',this.files[0])"></label>`}}
+ if(isA()&&live){x+=(o.status==='Placed'?`<button onclick="A.st('${o.id}','Packed')">Mark packed</button> `:'')+`<select id=cr${o.id}><option value="">Cancel reason…</option><option>Lack of stock</option><option>Excessive distance</option><option>Delayed delivery</option><option>Other</option></select><button class=d onclick="A.cancel('${o.id}',V('cr${o.id}'))">Cancel</button>`;
+  if(o.pLoc)x+=' '+map(o.pLoc)}
+ return `<div class=c><div class=row><b>#${o.id.slice(0,6)}</b><span class=m>${new Date(o.createdAt).toLocaleString()}</span><b style="margin-left:auto">${money(o.total)}</b></div><div class=m>${E(o.cName)} · ${items(o)}</div>
+ <div class=m>📦 ${E(o.addr&&o.addr.text)}</div><div style="margin:6px 0">${prog(o)}</div>${o.proof&&isA()?`<img class=p style="width:80px" src="${o.proof}">`:''}${x}</div>`}
+
+/* ---------- PARTNER ---------- */
+V_.avail=()=>S.orders.filter(o=>o.status==='Packed'&&!o.partnerId).map(ord).join('')||'<p class=m>No orders waiting for pickup.</p>';
+V_.mine=()=>S.orders.filter(o=>o.partnerId===S.me.id).map(ord).join('')||'<p class=m>No deliveries yet.</p>';
+A.accept=go(async id=>{await db.runTransaction(async t=>{const r=db.doc('orders/'+id),s=await t.get(r);if(s.data().partnerId)throw'Already taken';t.update(r,{partnerId:S.me.id,pName:S.me.name,pPhone:S.me.phone})});S.tab='mine';R()});
+A.reveal=go(async id=>{const o=S.orders.find(x=>x.id===id);if(!o.addr||o.addr.lat==null)throw'Customer address has no pinned location';const c=await pos(),d=dist(c.latitude,c.longitude,o.addr.lat,o.addr.lng);
+ if(d>50)throw`You are ${Math.round(d)} m away. Get within 50 m to view the number.`;$('#ph'+id).textContent='📞 '+(await db.doc(`orders/${id}/priv/c`).get()).data().phone});
+A.deliver=go(async(id,f)=>{if(!f)return;const o=S.orders.find(x=>x.id===id);await setSt(o,'Delivered',{proof:await pic(f,640)})});
+
+/* ---------- ADMIN ---------- */
+V_.products=()=>{const p=S.q.edit?S.products.find(x=>x.id===S.q.edit):{};return `<div class=c><h3>${p.id?'Edit':'Add'} product</h3><input id=pn placeholder=Name value="${E(p.name)}"><input id=pc placeholder="Category" value="${E(p.category)}">
+ <div class=row><input id=pp type=number placeholder="Price ₹" value="${p.price??''}" style="flex:1"><input id=pw placeholder="Weight (e.g. 500 g)" value="${E(p.weight)}" style="flex:1"><input id=ps type=number placeholder=Stock value="${p.stock??''}" style="flex:1"></div>
+ <input id=pi type=file accept="image/*"><button onclick="A.psave('${p.id||''}')">Save</button>${p.id?'<button class=s onclick="S.q.edit=null;R()">New</button>':''}</div>`+
+ S.products.map(p=>`<div class="c row"><img class=p style="width:50px;height:50px" src="${p.img||''}"><div style="flex:1"><b>${E(p.name)}</b><div class=m>${E(p.category)} · ${money(p.price)} · ${E(p.weight)} · stock ${p.stock} · ${avg(p)}</div></div>
+ <button class=s onclick="S.q.edit='${p.id}';R()">Edit</button><button class=d onclick="confirm('Delete?')&&db.doc('products/${p.id}').delete()">✕</button></div>`).join('')};
+A.psave=go(async id=>{const o=S.products.find(p=>p.id===id)||{},d={name:V('pn').trim(),category:V('pc').trim()||'General',price:+V('pp'),weight:V('pw').trim(),stock:+V('ps')};
+ if(!d.name||!d.price)throw'Name and price required';const im=await pic($('#pi').files[0],600);d.img=im||o.img||'';
+ if(!id)Object.assign(d,{ratingSum:0,ratingCount:0});await db.doc('products/'+(id||db.collection('products').doc().id)).set(d,{merge:true});S.q.edit=null;toast('Saved');R()});
+V_.users=()=>S.users.map(u=>{const lock=u.role==='default_admin'||(!isDA()&&u.role==='admin'),ops=(isDA()?['customer','partner','admin']:['customer','partner']);
+ return `<div class=c><div class=row><b style="flex:1">${E(u.name)} · ${E(u.phone)}</b>${lock?`<span class=tag>${u.role.replace('_',' ')}</span>`:`<select onchange="A.role('${u.id}',this.value)">${ops.map(r=>`<option ${r===u.role?'selected':''}>${r}</option>`).join('')}</select>`}</div>
+ <details><summary class=m>Account data</summary><div class=m>Addresses: ${[u.perm,...(u.temps||[])].filter(Boolean).map(a=>E(a.label+': '+a.text)).join(' | ')||'—'}
+ ${u.partner?`<br>Father: ${E(u.partner.father)} · DOB: ${E(u.partner.dob)} · ID: ${E(u.partner.aadhaar)} · Email: ${E(u.partner.email)}<br>Vehicle: ${E(u.partner.vno)} · DL: ${E(u.partner.dl)}<br><img class=p style="width:120px" src="${u.partner.vph}"> <img class=p style="width:120px" src="${u.partner.dlph}">`:''}</div></details></div>`}).join('');
+A.role=go(async(id,r)=>{await db.doc('users/'+id).update({role:r});toast('Role updated')});
+V_.partners=()=>S.users.filter(u=>u.role==='partner').map(u=>`<div class=c><b>${E(u.name)}</b> · ${E(u.phone)} · ${E(u.partner&&u.partner.vno)}<div class=m>${u.loc?`Updated ${new Date(u.loc.t).toLocaleTimeString()} ${map(u.loc)}`:'No location yet'}</div></div>`).join('')||'<p class=m>No partners.</p>';
+V_.revenue=()=>{const d=S.orders.filter(o=>o.status==='Delivered'),days={};for(let i=6;i>=0;i--)days[new Date(Date.now()-i*864e5).toLocaleDateString()]=0;
+ d.forEach(o=>{const k=new Date(o.createdAt).toLocaleDateString();if(k in days)days[k]+=o.total});const mx=Math.max(1,...Object.values(days));
+ return `<div class=c><h3>Revenue</h3><b style="font-size:26px">${money(d.reduce((s,o)=>s+o.total,0))}</b><div class=m>${d.length} delivered · ${S.orders.filter(o=>o.status==='Cancelled').length} cancelled · ${S.orders.length} total</div></div>
+ <div class=c>${Object.entries(days).map(([k,v])=>`<div class=row><span class=m style="width:80px">${k}</span><div class=bar style="width:${v/mx*60}%"></div>${money(v)}</div>`).join('')}</div>`};
+V_.settings=()=>`<div class=c><h3>System</h3><label class=row><input type=checkbox style="width:auto" ${S.cfg.maintenance?'checked':''} onchange="A.cfg({maintenance:this.checked})"> Maintenance mode (blocks customers & partners)</label>
+ <input id=mm placeholder="Maintenance message" value="${E(S.cfg.mmsg)}" onchange="A.cfg({mmsg:this.value})"></div>
+ <div class=c><h3>Broadcast mandatory notification</h3><textarea id=bt placeholder="Message to every user"></textarea><button onclick="A.bc()">Send to all</button></div>`;
+A.cfg=go(async o=>{await db.doc('settings/main').set(o,{merge:true})});
+A.bc=go(async()=>{const t=V('bt').trim();if(!t)throw'Write a message';await A.cfg({broadcast:{id:Date.now()+'',text:t}});toast('Broadcast sent')});
+
+/*  FIRESTORE RULES (starter – tighten before production)
+rules_version='2';service cloud.firestore{match /databases/{d}/documents{
+ function me(){return get(/databases/$(d)/documents/users/$(request.auth.uid)).data}
+ function adm(){return request.auth!=null&&me().role in ['admin','default_admin']}
+ function da(){return request.auth!=null&&me().role=='default_admin'}
+ match /users/{u}{allow read:if request.auth!=null&&(request.auth.uid==u||adm());
+  allow create:if request.auth.uid==u&&(request.resource.data.role in ['customer','partner']||(request.resource.data.role=='default_admin'&&request.auth.token.email=='6382462741@dlv.app'));
+  allow update:if (request.auth.uid==u&&request.resource.data.role==resource.data.role)||da()||(adm()&&resource.data.role in ['customer','partner']&&request.resource.data.role in ['customer','partner']);}
+ match /products/{p}{allow read:if request.auth!=null;allow write:if adm();
+  allow update:if request.auth!=null&&request.resource.data.diff(resource.data).affectedKeys().hasOnly(['stock','ratingSum','ratingCount']);}
+ match /orders/{o}{allow read:if request.auth!=null&&(resource.data.customerId==request.auth.uid||resource.data.partnerId==request.auth.uid||resource.data.status=='Packed'||adm());
+  allow create:if request.auth.uid==request.resource.data.customerId;allow update:if request.auth!=null;
+  match /priv/{x}{allow create:if request.auth!=null;allow read:if request.auth!=null&&(get(/databases/$(d)/documents/orders/$(o)).data.partnerId==request.auth.uid||adm());}}
+ match /settings/{s}{allow read:if true;allow write:if da();}
+ match /sms_queue/{s}{allow create:if request.auth!=null;}}}
+*/
+R();
+</script></body></html>
